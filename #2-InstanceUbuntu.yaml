@@ -1,0 +1,32 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Crea una instancia EC2 Ubuntu 20.04 con un grupo de seguridad para trafico SSH y HTTP."
+
+Resources:
+  # Grupo de Seguridad
+  MySecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Permitir trafico SSH y HTTP desde cualquier direccion IP"
+      GroupName: "SSHSecurityGroup"
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: "tcp"
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+
+  # Instancia EC2
+  MyEC2Instance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      InstanceType: "t2.small"  
+      KeyName: "vockey" 
+      SecurityGroupIds:
+        - !Ref MySecurityGroup  
+      ImageId: "ami-005fc0f236362e99f"
+      Tags:
+        - Key: "Name"
+          Value: "TomCat"  
