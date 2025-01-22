@@ -19,7 +19,7 @@ Resources:
           CidrIp: "0.0.0.0/0"
 
   # Instancia EC2
-  MyEC2Instance:
+  TomCat:
     Type: "AWS::EC2::Instance"
     Properties:
       InstanceType: "t2.small"  
