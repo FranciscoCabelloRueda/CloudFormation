@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Plantilla para crear una instancia EC2, un grupo de seguridad SSH y configurar Route 53
+
+Parameters:
+  InstanceName:
+    Type: String
+    Description: Tipo de instancia (t2.small, t2.micro, t2.nano)
+    Default: t2.small
+    AllowedValues:
+      - t2.small
+      - t2.micro
+      - t2.nano
+  InstanceImage:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: ID de la AMI de Ubuntu 22.04
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+  HostedZoneName:
+    Type: String
+    Description: Nombre del dominio para la zona hospedada en Route 53
+  DefaultVPC:
+    Type: String
+    Description: VPC en la que se creará la instancia
+    Default: "vpc-0878f90a33621559c"
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Nombre del par de claves EC2
+    Default: vockey
+
+Resources:
+  TomcatInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref InstanceImage
+      InstanceType: !Ref InstanceName
+      SecurityGroups:
+        - !Ref SecurityGroupSSH
+      KeyName: !Ref KeyName
+      Tags:
+        - Key: Name
+          Value: Tomcat
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          sudo apt update && sudo apt upgrade -y
+          sudo apt install -y openjdk-21-jdk wget tar git unzip
+          echo 'export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64' | sudo tee -a /etc/environment
+          source /etc/environment
+
+          # Crear usuario tomcat
+          sudo useradd -m -d /opt/tomcat -U -s /bin/false tomcat
+          
+          # Descargar e instalar Tomcat
+          cd /tmp
+          wget https://dlcdn.apache.org/tomcat/tomcat-11/v11.0.2/bin/apache-tomcat-11.0.2.tar.gz
+          sudo mkdir -p /opt/tomcat
+          sudo tar -xzf apache-tomcat-11.0.2.tar.gz -C /opt/tomcat --strip-components=1
+          
+          # Ajustar permisos
+          sudo chown -R tomcat:tomcat /opt/tomcat/
+          sudo chmod -R u+x /opt/tomcat/bin
+          
+          # Clonar y compilar Studentify
+          cd /tmp
+          git clone https://github.com/DavidHormigoRamirez/studentify.git
+          cd studentify
+          chmod +x gradlew
+          ./gradlew build
+          
+          # Copiar el .war a Tomcat
+          sudo cp build/libs/studentify-0.0.1-SNAPSHOT.war /opt/tomcat/webapps/studentify.war
+          sudo chown tomcat:tomcat /opt/tomcat/webapps/studentify.war
+          
+          # Configurar servicio systemd para Tomcat
+          echo '[Unit]
+          Description=Apache Tomcat Server
+          After=network.target
+          [Service]
+          User=tomcat
+          Group=tomcat
+          Environment="JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64"
+          Environment="CATALINA_HOME=/opt/tomcat"
+          ExecStart=/opt/tomcat/bin/catalina.sh run
+          ExecStop=/opt/tomcat/bin/shutdown.sh
+          Restart=always
+          [Install]
+          WantedBy=multi-user.target' | sudo tee /etc/systemd/system/tomcat.service
+          
+          # Habilitar y arrancar Tomcat
+          sudo systemctl daemon-reload
+          sudo systemctl enable tomcat
+          sudo systemctl restart tomcat
+          
+          # Abrir puertos en el firewall
+          sudo ufw allow 8080/tcp
+          sudo ufw reload
+  
+  SecurityGroupSSH:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH and Tomcat access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+  
+Outputs:
+  AppHealthEndpoint:
+    Description: URL del endpoint de salud de la aplicación
+    Value: !Sub
+      - "http://${PUBLICDNS}:8080/studentify/api/health"
+      - PUBLICDNS: !GetAtt TomcatInstance.PublicDnsName
+

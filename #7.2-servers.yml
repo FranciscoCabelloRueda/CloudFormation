@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: servers
+
+Parameters:
+
+  SecurityStackName:
+    Type: String
+    Default: Security
+
+  InstanceType:
+    Description: Tipo de instancia EC2
+    Type: String
+    Default: t2.large
+    AllowedValues:
+      - t2.large
+      - t2.medium
+      - t2.small
+      - t2.micro
+      - t2.nano
+
+  InstanceImage:
+    Description: Ami de la instancia EC2
+    Type: String
+    Default: "ami-09e67e426f25ce0d7" 
+
+Resources:
+
+  Frontend:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: !Ref InstanceImage
+      InstanceType: !Ref InstanceType 
+      KeyName: "vockey"
+      SecurityGroupIds: 
+        - Fn::ImportValue:
+            !Sub "${SecurityStackName}-SshId"
+        - Fn::ImportValue:
+            !Sub "${SecurityStackName}-WebId"
+      UserData: 
+        Fn::Base64: 
+          !Sub 
+            - |
+              #!/bin/bash -xe
+              exec > /tmp/userdata.log 2>&1
+              # Actualización e instalación de utilidades
+              apt update -y
+              apt upgrade -y
+              apt install python3-pip -y
+              pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+              ln -s /usr/local/init/ubuntu/cfn-hup /etc/init.d/cfn-hup
+
+              # ------------------> SCRIPT FRONTEND <------------------
+              apt install apache2 -y
+              a2enmod proxy
+              a2enmod proxy_http
+
+              # Configurar Apache para redirigir /studentify/api/ al backend
+              echo '<VirtualHost *:80>
+                DocumentRoot /var/www/html
+                ProxyPass /studentify/api/ http://${BackendPrivateIP}:8080/studentify/api/
+                ProxyPassReverse /studentify/api/ http://${BackendPrivateIP}:8080/studentify/api/
+              </VirtualHost>' | sudo tee /etc/apache2/sites-available/students.conf
+
+              a2ensite students
+              a2dissite 000-default
+
+              # Configurar la aplicación frontend
+              cd /tmp
+              git clone https://github.com/DavidHormigoRamirez/frontend_daw.git
+              cd frontend_daw
+              sed -i "s#fetch('CAMBIAR')#fetch('/studentify/api/students')#g" index.html
+              sed -i "s#fetch('CAMBIAR',#fetch('/studentify/api/students',#g" create.html
+              rm /var/www/html/index.html
+              cp *.html /var/www/html
+
+              systemctl restart apache2
+              # Señalización para CloudFormation (Frontend)
+              /usr/local/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Frontend --region ${AWS::Region}
+            - BackendPrivateIP: !GetAtt Backend.PrivateIp
+
+
+  Backend:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: !Ref InstanceImage
+      InstanceType: !Ref InstanceType 
+      KeyName: "vockey"
+      SecurityGroupIds: 
+        - Fn::ImportValue:
+            !Sub "${SecurityStackName}-SshId"
+        - Fn::ImportValue:
+            !Sub "${SecurityStackName}-TomcatId"
+      UserData: 
+        Fn::Base64: 
+          !Sub |
+            #!/bin/bash -xe
+            exec > /tmp/userdata.log 2>&1
+            #====================================================================#
+            # PREPARAR BOOTSTRAP DE CFN HELPER SCRIPTS
+            #====================================================================#
+            #sed -i "s/#\$nrconf{kernelhints} = -1;/\$nrconf{kernelhints} = -1;/g" /etc/needrestart/needrestart.conf
+            apt update -y
+            apt upgrade -y
+            apt install python3-pip -y
+            pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+            ln -s /usr/local/init/ubuntu/cfn-hup /etc/init.d/cfn-hup
+
+            #====================================================================#
+            # -----------------------> AQUI TU SCRIPT <--------------------------#
+            #====================================================================#
+
+            # Crear usuario tomcat
+            useradd -m -d /opt/tomcat -U -s /bin/false tomcat
+
+            # Instalar OpenJDK
+            apt install openjdk-21-jdk -y
+
+            # Descargar e instalar Tomcat
+            cd /tmp
+            wget https://dlcdn.apache.org/tomcat/tomcat-11/v11.0.2/bin/apache-tomcat-11.0.2.tar.gz
+            mkdir -p /opt/tomcat
+            tar xzvf apache-tomcat-11.0.2.tar.gz -C /opt/tomcat --strip-components=1
+            chown -R tomcat:tomcat /opt/tomcat
+            chmod -R u+x /opt/tomcat/bin
+
+            # Configurar usuarios en tomcat-users.xml
+            sed -i '/<\/tomcat-users>/i \
+            <role rolename="manager-gui" />\n\
+            <user username="manager" password="manager_password" roles="manager-gui" />\n\
+            <role rolename="admin-gui" />\n\
+            <user username="admin" password="admin_password" roles="manager-gui,admin-gui" />' /opt/tomcat/conf/tomcat-users.xml
+
+            # Comentar las restricciones en Manager y Host Manager
+            sed -i '/<Valve /,/\/>/ s|<Valve|<!--<Valve|; /<Valve /,/\/>/ s|/>|/>-->|' /opt/tomcat/webapps/manager/META-INF/context.xml
+            sed -i '/<Valve /,/\/>/ s|<Valve|<!--<Valve|; /<Valve /,/\/>/ s|/>|/>-->|' /opt/tomcat/webapps/host-manager/META-INF/context.xml
+
+            # Crear archivo de servicio systemd
+            echo '[Unit]
+            Description=Tomcat
+            After=network.target
+
+            [Service]
+            Type=forking
+
+            User=tomcat
+            Group=tomcat
+
+            Environment="JAVA_HOME=/usr/lib/jvm/java-1.21.0-openjdk-amd64"
+            Environment="JAVA_OPTS=-Djava.security.egd=file:///dev/urandom"
+            Environment="CATALINA_BASE=/opt/tomcat"
+            Environment="CATALINA_HOME=/opt/tomcat"
+            Environment="CATALINA_PID=/opt/tomcat/temp/tomcat.pid"
+            Environment="CATALINA_OPTS=-Xms512M -Xmx1024M -server -XX:+UseParallelGC"
+
+            ExecStart=/opt/tomcat/bin/startup.sh
+            ExecStop=/opt/tomcat/bin/shutdown.sh
+
+            RestartSec=10
+            Restart=always
+
+            [Install]
+            WantedBy=multi-user.target' | sudo tee -a /etc/systemd/system/tomcat.service
+            
+
+            # Recargar systemd y habilitar el servicio
+            systemctl daemon-reload
+            systemctl enable tomcat
+            systemctl start tomcat
+
+            # Nos movemos a /tmp
+            cd /tmp
+            git clone https://github.com/DavidHormigoRamirez/studentify.git
+            chmod +x studentify/gradlew
+            cd studentify
+            ./gradlew build
+            cp build/libs/studentify-1.0.0.war /opt/tomcat/webapps/studentify.war
+       
+            # Este tiene que ser tu ultima instruccion del script
+            # Recuerda modificar el valor del --resource al id lógico de la instancia
+            /usr/local/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Backend --region ${AWS::Region}
+
+Outputs:
+  AppURL:
+    Description: URL de la aplicacion
+    Value: 
+      Fn::Sub:
+        - "http://${FrontEndDNS}:80"
+        - FrontEndDNS: !GetAtt Frontend.PublicDnsName
+   

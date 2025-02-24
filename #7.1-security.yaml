@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Security Groups
+
+Resources:
+
+  SSHSecurityGroup:
+    Description: SSH Security Group
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: SSH-ANYWHERE
+      GroupDescription: SSH Security Group
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          FromPort: 22
+          ToPort: 22
+          IpProtocol: TCP
+          
+  WebSecurityGroup:
+    Description: Web Security Group
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: WEB-ANYWHERE
+      GroupDescription: Web Security Group
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+
+  TomcatSecurityGroup:
+    Description: Tomcat Security Group
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: TOMCAT-ANYWHERE
+      GroupDescription: Tomcat Security Group
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          FromPort: 8080
+          ToPort: 8080
+          IpProtocol: TCP
+Outputs:
+  SSHID:
+    Value: !Ref SSHSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-SshId"
+
+  WEBID:
+    Value: !Ref WebSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-WebId"
+
+  TOMCATID:
+    Value: !Ref TomcatSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-TomcatId"
+
